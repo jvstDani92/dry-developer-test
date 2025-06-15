@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using System.Text;
-using System.Xml.Serialization;
+using Taxually.TechnicalTest.Application.Dtos;
+using Taxually.TechnicalTest.Application.Services;
 
 // For more information on enabling Web API for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
 
@@ -10,54 +10,48 @@ namespace Taxually.TechnicalTest.Controllers
     [ApiController]
     public class VatRegistrationController : ControllerBase
     {
+        private readonly RegistrationResolver _resolver;
+
+        public VatRegistrationController(RegistrationResolver resolver)
+        {
+            _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
+        }
+
         /// <summary>
         /// Registers a company for a VAT number in a given country
         /// </summary>
         [HttpPost]
-        public async Task<ActionResult> Post([FromBody] VatRegistrationRequest request)
+        public async Task<ActionResult> Post([FromBody] VatRegistrationRequest request, CancellationToken ct)
         {
-            switch (request.Country)
+            if (request is null)
+                return BadRequest("Request cannot be null.");
+
+            if (string.IsNullOrWhiteSpace(request.Country))
+                return BadRequest("Country code is required.");
+            try
             {
-                case "GB":
-                    // UK has an API to register for a VAT number
-                    var httpClient = new TaxuallyHttpClient();
-                    await httpClient.PostAsync("https://api.uktax.gov.uk", request);
-                    break;
-                case "FR":
-                    // France requires an excel spreadsheet to be uploaded to register for a VAT number
-                    var csvBuilder = new StringBuilder();
-                    csvBuilder.AppendLine("CompanyName,CompanyId");
-                    csvBuilder.AppendLine($"{request.CompanyName}{request.CompanyId}");
-                    var csv = Encoding.UTF8.GetBytes(csvBuilder.ToString());
-                    var excelQueueClient = new TaxuallyQueueClient();
-                    // Queue file to be processed
-                    await excelQueueClient.EnqueueAsync("vat-registration-csv", csv);
-                    break;
-                case "DE":
-                    // Germany requires an XML document to be uploaded to register for a VAT number
-                    using (var stringwriter = new StringWriter())
-                    {
-                        var serializer = new XmlSerializer(typeof(VatRegistrationRequest));
-                        serializer.Serialize(stringwriter, request);
-                        var xml = stringwriter.ToString();
-                        var xmlQueueClient = new TaxuallyQueueClient();
-
-                        // Queue xml doc to be processed
-                        await xmlQueueClient.EnqueueAsync("vat-registration-xml", xml);
-                    }
-                    break;
-                default:
-                    return BadRequest("Country not supported");
-
+                var handler = _resolver.Resolve(request.Country);
+                await handler.RegisterAsync(request, ct);
+                return Ok("Registration request has been successfully processed.");
             }
-            return Ok();
+            catch (NotSupportedException ex)
+            {
+                return BadRequest($"Country not supported: {ex.Message}");
+            }
+            catch (ArgumentNullException ex)
+            {
+                return BadRequest($"Invalid request: {ex.Message}");
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest($"Invalid operation: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"An error occurred while processing your request: {ex.Message}");
+            }
         }
     }
 
-    public class VatRegistrationRequest
-    {
-        public string CompanyName { get; set; }
-        public string CompanyId { get; set; }
-        public string Country { get; set; }
-    }
+
 }
